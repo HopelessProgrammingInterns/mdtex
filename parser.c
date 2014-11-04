@@ -1,6 +1,7 @@
-#include <fcntl.h>
 #include <stdio.h>
+#include <string.h>
 #include <stdlib.h>
+#include <fcntl.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -37,7 +38,28 @@ typedef struct {
 	int len;
 } Element;
 
+typedef struct
+{
+	char *author;
+	char *date;
+} DocInfo;
+
 #define is_whitespace(c) ((c) == ' ' || (c) == '\t' || c == '\n')
+
+inline char *
+strdup (char *str, int len)
+{
+	char *ret;
+
+	if (!len)
+		len = strlen (str);
+
+	ret = (char *) malloc (len + 1);
+	strncpy (ret, str, len);
+	ret[len] = '\0';
+
+	return ret;
+}
 
 char advance_char (char **c, int *col, int *row)
 {
@@ -53,9 +75,83 @@ char advance_char (char **c, int *col, int *row)
 }
 
 int
+parse_header (Element *header_element, DocInfo *info)
+{
+	int len;
+	char *c, *end, **dest, *attr_start;
+
+	c = header_element->data;
+	end = header_element->data + header_element->len;
+
+	if (*c != '{')
+		return 0;
+	c++;
+
+	while (*c != '}') {
+		if (c >= end)
+			return 0;
+
+		while (is_whitespace (*c)) c++;
+
+		if (*c != '"')
+			return 0;
+		c++;
+
+		if (strncmp (c, "date", 4) == 0) {
+			dest = &info->date;
+			c += 4;
+		} else if (strncmp (c, "author", 6) == 0) {
+			dest = &info->author;
+			c += 6;
+		}
+
+		if (*c != '"')
+			return 0;
+		c++;
+
+		while (is_whitespace (*c)) c++;
+
+		if (*c != ':')
+			return 0;
+		c++;
+
+		while (is_whitespace (*c)) c++;
+
+		if (*c != '"')
+			return 0;
+		c++;
+
+		attr_start = c;
+		len = 0;
+		while (*c != '"') {
+			len++;
+			c++;
+		}
+		c++;
+
+		*dest = (char *) malloc (sizeof (char *) * (len + 1));
+		memcpy (*dest, attr_start, len);
+		(*dest)[len] = '\0';
+
+		while (is_whitespace (*c)) c++;
+
+		if (*c == ',') {
+			c++;
+			while (is_whitespace (*c)) c++;
+		} else if (*c == '}')
+			return 1;
+		else
+			return 0;
+	}
+
+	return 1;
+}
+
+int
 parse (int fd, int len, const char *error)
 {
 	char *c;
+	DocInfo doc_info;
 	Token current_token;
 	Element *list;
 	Element *current_element;
@@ -65,8 +161,10 @@ parse (int fd, int len, const char *error)
 #define next_element() \
 	current_element++; \
 	current_element->data = c; \
-	if (!current_element) \
-		exit (1);
+	if (!current_element) { \
+		error = "Max elements exceeded"; \
+		return 0; \
+	}
 
 #define skip_whitespaces() \
 	while (is_whitespace(*c)) advance_char (&c, &col, &row)
@@ -236,6 +334,16 @@ parse (int fd, int len, const char *error)
 
 	finish_none_element ();
 
+	// if first element is header parse it and fill our doc info
+	if (list->type == HEADER) {
+		if (!parse_header (list, &doc_info)) {
+			error = "Malformed document header";
+			return 0;
+		}
+	}
+
+	printf ("Author: %s, Date: %s\n", doc_info.author, doc_info.date);
+
 	Element *i;
 	for (i = list; i != current_element; i++) {
 		printf ("%i, %.*s\n", i->type, i->len, i->data);
@@ -270,7 +378,7 @@ main (int argc, char **argv)
 	}
 
 	if (!parse (fd, st.st_size, error)) {
-		perror ("Parsing failed");
+		fprintf (stderr, "Parsing failed: %s\n", error);
 		exit (1);
 	}
 
