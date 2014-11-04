@@ -1,6 +1,7 @@
 #include <fcntl.h>
 #include <stdio.h>
 #include <stdlib.h>
+#include <string.h>
 #include <sys/mman.h>
 #include <sys/stat.h>
 
@@ -39,7 +40,8 @@ typedef struct {
 
 #define is_whitespace(c) ((c) == ' ' || (c) == '\t' || c == '\n')
 
-char advance_char (char **c, int *col, int *row)
+char
+advance_char (char **c, int *col, int *row)
 {
 	(*c)++;
 
@@ -55,12 +57,11 @@ char advance_char (char **c, int *col, int *row)
 int
 parse (int fd, int len, const char *error)
 {
-	char *c;
+	char *c, *file;
 	Token current_token;
 	Element *list;
 	Element *current_element;
-	int is_start_of_line = 1;
-	int row, col;
+	int is_start_of_line = 1, row, col;
 
 #define next_element() \
 	current_element++; \
@@ -84,7 +85,7 @@ parse (int fd, int len, const char *error)
 
 	current_element->type = NONE;
 
-	c = (char *) mmap (NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
+	file = c = (char *) mmap (NULL, len, PROT_READ, MAP_PRIVATE, fd, 0);
 
 	if (c == MAP_FAILED)
 		return 0;
@@ -95,15 +96,15 @@ parse (int fd, int len, const char *error)
 
 		switch (*c) {
 			case '{':
-				finish_none_element ();
-
-				if (!is_start_of_line)
+				// only parse if it's the very first element
+				if (list != current_element)
 					break;
+
+				finish_none_element ();
 
 				current_element->type = HEADER;
 				current_element->data = c;
 
-				// just assume header and skip for now
 				while (next_char () != '}') {
 					if (*c == '\0') {
 						error = "Header not terminated";
@@ -116,6 +117,45 @@ parse (int fd, int len, const char *error)
 
 				next_char ();
 				next_element ();
+				break;
+			case '=':
+				{
+					char *linebreak, *cur, *ret, *prev;
+					int prev_len;
+
+					if (!is_start_of_line)
+						break;
+
+					if (current_element->len < 1)
+						break;
+
+					cur = current_element->data;
+					while ((ret = strstr (cur, "\n"))) {
+						cur = ret + 1;
+						if (ret >= current_element->data + current_element->len - 1) {
+							ret = prev;
+							break;
+						}
+
+						prev = ret;
+					}
+
+					if (!ret)
+						break;
+
+					prev_len = current_element->len;
+					current_element->len = ret - current_element->data;
+
+					finish_none_element ();
+
+					current_element->type = HEADING_1;
+					current_element->data = (char *) ret;
+					current_element->len = c - ret - 1;
+
+					while (*c == '=') next_char ();
+
+					next_element ();
+				}
 				break;
 			case '*':
 				finish_none_element ();
@@ -240,6 +280,9 @@ parse (int fd, int len, const char *error)
 	for (i = list; i != current_element; i++) {
 		printf ("%i, %.*s\n", i->type, i->len, i->data);
 	}
+
+	if (munmap (file, len) != 0)
+		return 0;
 
 	return 1;
 }
