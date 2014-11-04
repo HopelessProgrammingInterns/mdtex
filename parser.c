@@ -39,23 +39,47 @@ typedef struct {
 
 #define is_whitespace(c) ((c) == ' ' || (c) == '\t' || c == '\n')
 
-#define skip_whitespaces(c) \
-	while (is_whitespace(*c)) c++
+char advance_char (char **c, int *col, int *row)
+{
+	(*c)++;
+
+	if (**c == '\n') {
+		(*row)++;
+		col = 0;
+	} else
+		(*col)++;
+
+	return **c;
+}
 
 int
-parse (int fd, int len, char *error)
+parse (int fd, int len, const char *error)
 {
 	char *c;
 	Token current_token;
 	Element *list;
 	Element *current_element;
 	int is_start_of_line = 1;
+	int row, col;
 
-#define next_element() current_element++; \
+#define next_element() \
+	current_element++; \
+	current_element->data = c; \
 	if (!current_element) \
 		exit (1);
 
-	list = calloc (PAGE_SIZE, sizeof (Element));
+#define skip_whitespaces() \
+	while (is_whitespace(*c)) advance_char (&c, &col, &row)
+
+#define finish_none_element() \
+	if (current_element->len > 0) { \
+		current_element->len++; \
+		next_element (); \
+	}
+
+#define next_char() advance_char (&c, &col, &row)
+
+	list = (Element *) calloc (PAGE_SIZE, sizeof (Element));
 	current_element = list;
 
 	current_element->type = NONE;
@@ -67,10 +91,12 @@ parse (int fd, int len, char *error)
 
 	do {
 		if (is_start_of_line)
-			skip_whitespaces (c);
+			skip_whitespaces ();
 
 		switch (*c) {
 			case '{':
+				finish_none_element ();
+
 				if (!is_start_of_line)
 					break;
 
@@ -78,29 +104,32 @@ parse (int fd, int len, char *error)
 				current_element->data = c;
 
 				// just assume header and skip for now
-				while (*(++c) != '}') {
-					if (!*c) {
+				while (next_char () != '}') {
+					if (*c == '\0') {
 						error = "Header not terminated";
 						return 0;
 					}
 
 					current_element->len++;
 				}
+				current_element->len += 2;
 
+				next_char ();
 				next_element ();
 				break;
 			case '*':
-				printf ("IS START OF LINE: %i\n", is_start_of_line);
+				finish_none_element ();
+
 				if (is_start_of_line) {
 					current_element->type = LIST_ITEM;
-					c++;
-					skip_whitespaces (c);
+					next_char ();
+					skip_whitespaces ();
 					next_element ();
 				} else {
 					current_element->type = BOLD;
 					current_element->data = c + 1;
 
-					while (*(++c) != '*') {
+					while (next_char () != '*') {
 						if (!*c) {
 							error = "Bold not terminated";
 							return 0;
@@ -109,14 +138,18 @@ parse (int fd, int len, char *error)
 						current_element->len++;
 					}
 
+					next_char ();
 					next_element ();
 				}
 
 				break;
 			case '`':
+				finish_none_element ();
+
 				if (c[1] == '`' && c[2] == '`') {
 					current_element->type = MULTILINE_CODE;
-					c += 2;
+					next_char ();
+					next_char ();
 
 					current_element->data = c;
 					while (!(*c == '`' && c[1] == '`' && c[2] == '`'))
@@ -125,7 +158,7 @@ parse (int fd, int len, char *error)
 					current_element->type = CODE;
 					current_element->data = c + 1;
 
-					while (*++c != '`') {
+					while (next_char () != '`') {
 						if (!*c) {
 							error = "Code literal not terminated";
 							return 0;
@@ -138,10 +171,12 @@ parse (int fd, int len, char *error)
 				next_element ();
 				break;
 			case '$':
+				finish_none_element ();
+
 				current_element->type = MATH;
 				current_element->data = c + 1;
 
-				while (*++c != '$') {
+				while (next_char () != '$') {
 					if (!*c) {
 						error = "Math literal not terminated";
 						return 0;
@@ -150,28 +185,36 @@ parse (int fd, int len, char *error)
 					current_element->len++;
 				}
 
+				next_char ();
+
 				next_element ();
 				break;
 			case '#':
+				finish_none_element ();
+
 				if (is_start_of_line) {
 					current_element->type = HEADING_1;
-					while (*++c == '#')
-						current_element->type++;
+					while (next_char () == '#')
+						(*(int *) (&current_element->type))++;
 
-					skip_whitespaces (c);
+					skip_whitespaces ();
 
 					current_element->data = c;
-					while (*(++c) != '\n')
+					while (next_char () != '\n')
 						current_element->len++;
+
+					current_element->len++;
 
 					next_element ();
 				}
 				break;
 			case '_':
+				finish_none_element ();
+
 				current_element->type = ITALIC;
 				current_element->data = c + 1;
 
-				while (*(++c) != '_') {
+				while (next_char () != '_') {
 					if (!*c) {
 						error = "Italic not terminated";
 						return 0;
@@ -182,12 +225,16 @@ parse (int fd, int len, char *error)
 
 				next_element ();
 				break;
-			case '\n':
+			default:
+				if (current_element->type == NONE)
+					current_element->len++;
 				break;
 		}
 
 		is_start_of_line = *c == '\n';
-	} while (*(++c));
+	} while (next_char ());
+
+	finish_none_element ();
 
 	Element *i;
 	for (i = list; i != current_element; i++) {
