@@ -1,3 +1,3 @@
 
 mdtex: parser.c
-	gcc --std=c11 -o mdtex parser.c
+	gcc --std=c11 -g -o mdtex parser.c

@@ -5,26 +5,34 @@
 #include <sys/mman.h>
 #include <sys/stat.h>
 
+#define MIN(x,y) ((x) < (y) ? (x) : (y))
+
 #define PAGE_SIZE 512
 
 typedef enum
 {
-	NONE,
-	HEADER,
+	NONE = 0,
+	HEADER = 1,
 
-	BOLD,
-	UNDERLINE,
-	ITALIC,
+	BOLD = 2,
+	UNDERLINE = 3,
+	ITALIC = 4,
 
-	LIST_ITEM,
-	UNORDERED_LIST_ITEM,
+	LIST_ITEM_1 = 5,
+	LIST_ITEM_2 = 6,
+	LIST_ITEM_3 = 7,
+	LIST_ITEM_4 = 8,
+	UNORDERED_LIST_ITEM_1 = 9,
+	UNORDERED_LIST_ITEM_2 = 10,
+	UNORDERED_LIST_ITEM_3 = 11,
+	UNORDERED_LIST_ITEM_4 = 12,
 
-	HEADING_1,
-	HEADING_2,
-	HEADING_3,
-	HEADING_4,
-	HEADING_5,
-	HEADING_6,
+	HEADING_1 = 13,
+	HEADING_2 = 14,
+	HEADING_3 = 15,
+	HEADING_4 = 16,
+	HEADING_5 = 17,
+	HEADING_6 = 18,
 
 	LINK,
 	CODE,
@@ -41,6 +49,7 @@ typedef struct {
 typedef struct
 {
 	char *author;
+	char *matriculation_number;
 	char *date;
 } DocInfo;
 
@@ -104,6 +113,9 @@ parse_header (Element *header_element, DocInfo *info)
 		} else if (strncmp (c, "author", 6) == 0) {
 			dest = &info->author;
 			c += 6;
+		} else if (strncmp (c, "matriculation_number", 20)) {
+			dest = &info->matriculation_number;
+			c += 20;
 		}
 
 		if (*c != '"')
@@ -148,21 +160,48 @@ parse_header (Element *header_element, DocInfo *info)
 	return 1;
 }
 
+/**
+ * Checks if only whitespaces preceed that character by returning
+ * the number of whitespace characters before \n + 1, so you can check
+ * for truthiness, but have to subtract 1 if you need the number of
+ * whitespaces
+ *
+ * @param start Start of the char buffer
+ * @param c     Current character
+ */
 int
-parse (int fd, int len, const char *error)
+is_start_of_line (char *start, char *c)
+{
+	int index = 0;
+
+	while ((c - index) != start) {
+		index++;
+
+		if (*(c - index) == '\n')
+			return index;
+
+		if (*(c - index) != ' ' && *(c - index) != '\t')
+			return 0;
+	}
+
+	return index;
+}
+
+int
+parse (int fd, int len, const char **error)
 {
 	char *c, *file;
 	DocInfo doc_info;
 	Token current_token;
 	Element *list;
 	Element *current_element;
-	int is_start_of_line = 1, row, col;
+	int row, col;
 
 #define next_element() \
 	current_element++; \
 	current_element->data = c; \
 	if (!current_element) { \
-		error = "Max elements exceeded"; \
+		*error = "Max elements exceeded"; \
 		return 0; \
 	}
 
@@ -176,6 +215,7 @@ parse (int fd, int len, const char *error)
 	}
 
 #define next_char() advance_char (&c, &col, &row)
+#define is_start() is_start_of_line (file, c)
 
 	list = (Element *) calloc (PAGE_SIZE, sizeof (Element));
 	current_element = list;
@@ -188,9 +228,6 @@ parse (int fd, int len, const char *error)
 		return 0;
 
 	do {
-		if (is_start_of_line)
-			skip_whitespaces ();
-
 		switch (*c) {
 			case '{':
 				// only parse if it's the very first element
@@ -204,7 +241,7 @@ parse (int fd, int len, const char *error)
 
 				while (next_char () != '}') {
 					if (*c == '\0') {
-						error = "Header not terminated";
+						*error = "Header not terminated";
 						return 0;
 					}
 
@@ -220,7 +257,7 @@ parse (int fd, int len, const char *error)
 					char *linebreak, *cur, *ret, *prev;
 					int prev_len;
 
-					if (!is_start_of_line)
+					if (!is_start ())
 						break;
 
 					if (current_element->len < 1)
@@ -255,30 +292,35 @@ parse (int fd, int len, const char *error)
 				}
 				break;
 			case '*':
-				finish_none_element ();
+				{
+					int whitespaces;
 
-				if (is_start_of_line) {
-					current_element->type = LIST_ITEM;
-					next_char ();
-					skip_whitespaces ();
-					next_element ();
-				} else {
-					current_element->type = BOLD;
-					current_element->data = c + 1;
+					finish_none_element ();
 
-					while (next_char () != '*') {
-						if (!*c) {
-							error = "Bold not terminated";
-							return 0;
+					if ((whitespaces = is_start ())) {
+						int index = 0;
+
+						current_element->type = LIST_ITEM_1 + MIN (whitespaces - 1, 3);
+						next_char ();
+						skip_whitespaces ();
+						next_element ();
+					} else {
+						current_element->type = BOLD;
+						current_element->data = c + 1;
+
+						while (next_char () != '*') {
+							if (!*c) {
+								*error = "Bold not terminated";
+								return 0;
+							}
+
+							current_element->len++;
 						}
 
-						current_element->len++;
+						next_char ();
+						next_element ();
 					}
-
-					next_char ();
-					next_element ();
 				}
-
 				break;
 			case '`':
 				finish_none_element ();
@@ -297,7 +339,7 @@ parse (int fd, int len, const char *error)
 
 					while (next_char () != '`') {
 						if (!*c) {
-							error = "Code literal not terminated";
+							*error = "Code literal not terminated";
 							return 0;
 						}
 
@@ -315,7 +357,7 @@ parse (int fd, int len, const char *error)
 
 				while (next_char () != '$') {
 					if (!*c) {
-						error = "Math literal not terminated";
+						*error = "Math literal not terminated";
 						return 0;
 					}
 
@@ -329,7 +371,7 @@ parse (int fd, int len, const char *error)
 			case '#':
 				finish_none_element ();
 
-				if (is_start_of_line) {
+				if (is_start ()) {
 					current_element->type = HEADING_1;
 					while (next_char () == '#')
 						(*(int *) (&current_element->type))++;
@@ -353,7 +395,7 @@ parse (int fd, int len, const char *error)
 
 				while (next_char () != '_') {
 					if (!*c) {
-						error = "Italic not terminated";
+						*error = "Italic not terminated";
 						return 0;
 					}
 
@@ -367,8 +409,6 @@ parse (int fd, int len, const char *error)
 					current_element->len++;
 				break;
 		}
-
-		is_start_of_line = *c == '\n';
 	} while (next_char ());
 
 	finish_none_element ();
@@ -376,7 +416,7 @@ parse (int fd, int len, const char *error)
 	// if first element is header parse it and fill our doc info
 	if (list->type == HEADER) {
 		if (!parse_header (list, &doc_info)) {
-			error = "Malformed document header";
+			*error = "Malformed document header";
 			return 0;
 		}
 	}
@@ -400,8 +440,11 @@ main (int argc, char **argv)
 	char *path;
 	int fd;
 	struct stat st;
-	char error[512];
-   
+	// const char error[512];
+	const char *error;
+
+	error = malloc (512);
+
 	path = argv[1];
 
 	if (!path)
@@ -419,7 +462,7 @@ main (int argc, char **argv)
 		exit (1);
 	}
 
-	if (!parse (fd, st.st_size, error)) {
+	if (!parse (fd, st.st_size, &error)) {
 		fprintf (stderr, "Parsing failed: %s\n", error);
 		exit (1);
 	}
